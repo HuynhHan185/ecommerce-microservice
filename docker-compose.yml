@@ -1,0 +1,92 @@
+services:
+  auth-db:
+    image: postgres:16
+    container_name: auth-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: auth_db
+    ports: ["5441:5432"]
+    volumes: ["auth-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  customer-db:
+    image: postgres:16
+    container_name: customer-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: customer_db
+    ports: ["5442:5432"]
+    volumes: ["customer-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  order-db:
+    image: postgres:16
+    container_name: order-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: order_db
+    ports: ["5443:5432"]
+    volumes: ["order-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  product-db:
+    image: mongo:7.0
+    container_name: product-db
+    restart: unless-stopped
+    ports: ["27018:27017"]
+    volumes: ["product-data:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  shipment-db:
+    image: mongo:7.0
+    container_name: shipment-db
+    restart: unless-stopped
+    ports: ["27019:27017"]
+    volumes: ["shipment-data:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: gateway-redis
+    restart: unless-stopped
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  auth-data:
+  customer-data:
+  order-data:
+  product-data:
+  shipment-data:
