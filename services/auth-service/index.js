@@ -5,6 +5,7 @@ const protoLoader = require('@grpc/proto-loader');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { Kafka } = require('kafkajs');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('Thiếu JWT_SECRET trong .env');
@@ -15,6 +16,8 @@ const pool = new Pool({
   user: process.env.DB_USER, password: process.env.DB_PASSWORD,
   database: 'auth_db',
 });
+
+const producer = new Kafka({ clientId: 'auth-service', brokers: ['localhost:9092'] }).producer();
 
 async function initDb() {
   await pool.query(`
@@ -57,6 +60,15 @@ const handlers = {
         `INSERT INTO users(username,email,phone,password_hash,role_id)
          SELECT $1,$2,$3,$4,id FROM roles WHERE name='CUSTOMER'
          RETURNING id`, [r.username, r.email, r.phone || null, hash]);
+      try {
+        await producer.send({
+          topic: 'user-registered',
+          messages: [{
+            key: rows[0].id,
+            value: JSON.stringify({ uid: rows[0].id, username: r.username, email: r.email }),
+          }],
+        });
+      } catch (e) { console.error('Không gửi được user-registered:', e.message); }
       cb(null, { user_id: rows[0].id, username: r.username, role: 'CUSTOMER' });
     } catch (e) {
       if (e.code === '23505') return fail(cb, grpc.status.ALREADY_EXISTS, 'username hoặc email đã tồn tại');
@@ -91,4 +103,8 @@ const handlers = {
     if (err) throw err;
     console.log('Auth service gRPC chạy ở :50051');
   });
+  // Kafka kết nối nền: Auth vẫn đăng nhập/đăng ký được dù Kafka chưa sẵn sàng
+  producer.connect()
+    .then(() => console.log('Kafka producer đã kết nối'))
+    .catch((e) => console.error('Kafka chưa kết nối được:', e.message));
 })();

@@ -9,10 +9,11 @@ const Redis = require('ioredis');
 const redis = new Redis({ host: 'localhost', port: 6379 });
 redis.on('error', (e) => console.error('Redis lỗi:', e.message));
 
-const def = protoLoader.loadSync(path.join(__dirname, '../proto/auth.proto'),
-  { keepCase: true, defaults: true });
-const auth = new (grpc.loadPackageDefinition(def).auth.AuthService)(
-  'localhost:50051', grpc.credentials.createInsecure());
+const load = (file) => grpc.loadPackageDefinition(
+  protoLoader.loadSync(path.join(__dirname, '../proto', file), { keepCase: true, defaults: true }));
+const insecure = grpc.credentials.createInsecure();
+const auth = new (load('auth.proto').auth.AuthService)('localhost:50051', insecure);
+const customer = new (load('customer.proto').customer.CustomerService)('localhost:50052', insecure);
 
 const HTTP = {
   [grpc.status.INVALID_ARGUMENT]: 400,
@@ -21,8 +22,8 @@ const HTTP = {
   [grpc.status.NOT_FOUND]: 404,
   [grpc.status.ALREADY_EXISTS]: 409,
 };
-const call = (method, body, res, okStatus = 200) =>
-  auth[method](body, (err, reply) => {
+const rpc = (client, method, body, res, okStatus = 200) =>
+  client[method](body, (err, reply) => {
     if (err) return res.status(HTTP[err.code] || 500).json({ error: err.details });
     res.status(okStatus).json(reply);
   });
@@ -70,6 +71,12 @@ const authorize = (...roles) => (req, res, next) =>
     ? next()
     : res.status(403).json({ error: 'Không đủ quyền' });
 
+// Chỉ chủ tài khoản hoặc ADMIN được truy cập
+const ownerOrAdmin = (req, res, next) =>
+  req.user.role === 'ADMIN' || req.user.user_id === req.params.uid
+    ? next()
+    : res.status(403).json({ error: 'Không đủ quyền' });
+
 const app = express();
 app.use(express.json());
 app.use((req, _res, next) => {
@@ -79,11 +86,25 @@ app.use((req, _res, next) => {
 app.use(rateLimit('global', 100));
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
-app.post('/api/auth/register', (req, res) => call('Register', req.body, res, 201));
-app.post('/api/auth/login', rateLimit('login', 10), (req, res) => call('Login', req.body, res));
 
-// Route thử, sau này thay bằng route thật
+// ---- Auth ----
+app.post('/api/auth/register', (req, res) => rpc(auth, 'Register', req.body, res, 201));
+app.post('/api/auth/login', rateLimit('login', 10), (req, res) => rpc(auth, 'Login', req.body, res));
+
+// Route thử
 app.get('/api/me', authenticate, (req, res) => res.json(req.user));
 app.get('/api/admin/ping', authenticate, authorize('ADMIN'), (_req, res) => res.json({ ok: true }));
+
+// ---- Customer ----
+app.get('/api/customers/:uid', authenticate, ownerOrAdmin,
+  (req, res) => rpc(customer, 'GetCustomer', { uid: req.params.uid }, res));
+
+app.put('/api/customers/:uid', authenticate, ownerOrAdmin, (req, res) => {
+  const { fullname, mid } = req.body || {};
+  if (mid !== undefined && req.user.role !== 'ADMIN')
+    return res.status(403).json({ error: 'Chỉ ADMIN được đổi hạng thành viên' });
+  rpc(customer, 'UpdateCustomer',
+    { uid: req.params.uid, fullname: fullname || '', mid: mid || 0, set_mid: mid !== undefined }, res);
+});
 
 app.listen(8080, () => console.log('API Gateway chạy ở :8080'));

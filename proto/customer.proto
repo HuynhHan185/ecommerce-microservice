@@ -1,0 +1,15 @@
+syntax = "proto3";
+package customer;
+
+service CustomerService {
+  rpc GetCustomer (GetCustomerRequest) returns (Customer);
+  rpc UpdateCustomer (UpdateCustomerRequest) returns (UpdateReply);
+}
+
+message GetCustomerRequest { string uid = 1; }
+message Customer {
+  string uid = 1; string fullname = 2;
+  int32 mid = 3; string mname = 4; int32 score = 5; int32 discount = 6;
+}
+message UpdateCustomerRequest { string uid = 1; string fullname = 2; int32 mid = 3; bool set_mid = 4; }
+message UpdateReply { string message = 1; string uid = 2; }
