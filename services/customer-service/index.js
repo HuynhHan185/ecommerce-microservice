@@ -5,11 +5,19 @@ const protoLoader = require('@grpc/proto-loader');
 const { Pool } = require('pg');
 const { Kafka } = require('kafkajs');
 
+// ---- Cấu hình (đọc từ biến môi trường, mặc định cho chạy local) ----
+const GRPC_PORT = process.env.CUSTOMER_PORT || 50052;
+const KAFKA_BROKERS = (process.env.KAFKA_BROKERS || 'localhost:9092').split(',');
+
 const pool = new Pool({
-  host: 'localhost', port: 5442,
-  user: process.env.DB_USER, password: process.env.DB_PASSWORD,
-  database: 'customer_db',
+  host: process.env.CUSTOMER_DB_HOST || 'localhost',
+  port: Number(process.env.CUSTOMER_DB_PORT || 5442),
+  user: process.env.CUSTOMER_DB_USER || process.env.DB_USER,
+  password: process.env.CUSTOMER_DB_PASSWORD || process.env.DB_PASSWORD,
+  database: process.env.CUSTOMER_DB_NAME || 'customer_db',
 });
+pool.on('error', (e) => console.error('Lỗi kết nối Postgres (idle):', e.message));
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function initDb() {
@@ -31,6 +39,17 @@ async function initDb() {
       VALUES ('Bronze',0,0),('Silver',200,5),('Gold',500,10)
       ON CONFLICT (mname) DO NOTHING;
   `);
+}
+
+// Postgres có thể chưa sẵn sàng khi container vừa lên: thử lại thay vì sập
+async function initDbWithRetry() {
+  for (;;) {
+    try { await initDb(); console.log('Đã kết nối Postgres customer_db'); return; }
+    catch (e) {
+      console.error('Kết nối Postgres lỗi, thử lại sau 3s:', e.message);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
 }
 
 const def = protoLoader.loadSync(path.join(__dirname, '../../proto/customer.proto'),
@@ -71,7 +90,7 @@ const handlers = {
 
 // Nhận event user-registered từ Auth Service, tạo Customer ở hạng thấp nhất
 async function startConsumer() {
-  const kafka = new Kafka({ clientId: 'customer-service', brokers: ['localhost:9092'] });
+  const kafka = new Kafka({ clientId: 'customer-service', brokers: KAFKA_BROKERS });
   const consumer = kafka.consumer({ groupId: 'customer-service' });
   await consumer.connect();
   await consumer.subscribe({ topic: 'user-registered', fromBeginning: true });
@@ -89,13 +108,24 @@ async function startConsumer() {
   });
 }
 
+// Kafka có thể chưa sẵn sàng khi container vừa lên: thử lại thay vì sập
+async function startConsumerWithRetry() {
+  for (;;) {
+    try { await startConsumer(); return; }
+    catch (e) {
+      console.error('Kết nối Kafka lỗi, thử lại sau 5s:', e.message);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+}
+
 (async () => {
-  await initDb();
+  await initDbWithRetry();
   const server = new grpc.Server();
   server.addService(proto.CustomerService.service, handlers);
-  server.bindAsync('0.0.0.0:50052', grpc.ServerCredentials.createInsecure(), (err) => {
+  server.bindAsync(`0.0.0.0:${GRPC_PORT}`, grpc.ServerCredentials.createInsecure(), (err) => {
     if (err) throw err;
-    console.log('Customer service gRPC chạy ở :50052');
+    console.log(`Customer service gRPC chạy ở :${GRPC_PORT}`);
   });
-  await startConsumer();
+  startConsumerWithRetry();
 })();

@@ -7,17 +7,24 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Kafka } = require('kafkajs');
 
+// ---- Cấu hình (đọc từ biến môi trường, mặc định cho chạy local) ----
+const GRPC_PORT = process.env.AUTH_PORT || 50051;
+const KAFKA_BROKERS = (process.env.KAFKA_BROKERS || 'localhost:9092').split(',');
+
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('Thiếu JWT_SECRET trong .env');
 const TOKEN_TTL = 3600;
 
 const pool = new Pool({
-  host: 'localhost', port: 5441,
-  user: process.env.DB_USER, password: process.env.DB_PASSWORD,
-  database: 'auth_db',
+  host: process.env.AUTH_DB_HOST || 'localhost',
+  port: Number(process.env.AUTH_DB_PORT || 5441),
+  user: process.env.AUTH_DB_USER || process.env.DB_USER,
+  password: process.env.AUTH_DB_PASSWORD || process.env.DB_PASSWORD,
+  database: process.env.AUTH_DB_NAME || 'auth_db',
 });
+pool.on('error', (e) => console.error('Lỗi kết nối Postgres (idle):', e.message));
 
-const producer = new Kafka({ clientId: 'auth-service', brokers: ['localhost:9092'] }).producer();
+const producer = new Kafka({ clientId: 'auth-service', brokers: KAFKA_BROKERS }).producer();
 
 async function initDb() {
   await pool.query(`
@@ -47,6 +54,17 @@ async function initDb() {
       `INSERT INTO users(username,email,password_hash,role_id)
        SELECT $1,$2,$3,id FROM roles WHERE name=$4
        ON CONFLICT DO NOTHING`, [username, email, hash, role]);
+  }
+}
+
+// Postgres có thể chưa sẵn sàng khi container vừa lên: thử lại thay vì sập
+async function initDbWithRetry() {
+  for (;;) {
+    try { await initDb(); console.log('Đã kết nối Postgres auth_db'); return; }
+    catch (e) {
+      console.error('Kết nối Postgres lỗi, thử lại sau 3s:', e.message);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
   }
 }
 
@@ -101,16 +119,24 @@ const handlers = {
   },
 };
 
+// Kafka kết nối nền, thử lại đến khi được: Auth vẫn đăng nhập/đăng ký được dù Kafka chưa sẵn sàng
+async function connectProducerWithRetry() {
+  for (;;) {
+    try { await producer.connect(); console.log('Kafka producer đã kết nối'); return; }
+    catch (e) {
+      console.error('Kafka chưa kết nối được, thử lại sau 5s:', e.message);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+}
+
 (async () => {
-  await initDb();
+  await initDbWithRetry();
   const server = new grpc.Server();
   server.addService(authProto.AuthService.service, handlers);
-  server.bindAsync('0.0.0.0:50051', grpc.ServerCredentials.createInsecure(), (err) => {
+  server.bindAsync(`0.0.0.0:${GRPC_PORT}`, grpc.ServerCredentials.createInsecure(), (err) => {
     if (err) throw err;
-    console.log('Auth service gRPC chạy ở :50051');
+    console.log(`Auth service gRPC chạy ở :${GRPC_PORT}`);
   });
-  // Kafka kết nối nền: Auth vẫn đăng nhập/đăng ký được dù Kafka chưa sẵn sàng
-  producer.connect()
-    .then(() => console.log('Kafka producer đã kết nối'))
-    .catch((e) => console.error('Kafka chưa kết nối được:', e.message));
+  connectProducerWithRetry();
 })();

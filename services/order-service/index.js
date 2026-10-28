@@ -5,18 +5,28 @@ const protoLoader = require('@grpc/proto-loader');
 const { Pool } = require('pg');
 const { Kafka } = require('kafkajs');
 
+// ---- Cấu hình (đọc từ biến môi trường, mặc định cho chạy local) ----
+const GRPC_PORT = process.env.ORDER_PORT || 50054;
+const CUSTOMER_ADDR = process.env.CUSTOMER_SERVICE_ADDR || 'localhost:50052';
+const PRODUCT_ADDR = process.env.PRODUCT_SERVICE_ADDR || 'localhost:50053';
+const KAFKA_BROKERS = (process.env.KAFKA_BROKERS || 'localhost:9092').split(',');
+
 const pool = new Pool({
-  host: 'localhost', port: 5443,
-  user: process.env.DB_USER, password: process.env.DB_PASSWORD,
-  database: 'order_db',
+  host: process.env.ORDER_DB_HOST || 'localhost',
+  port: Number(process.env.ORDER_DB_PORT || 5443),
+  user: process.env.ORDER_DB_USER || process.env.DB_USER,
+  password: process.env.ORDER_DB_PASSWORD || process.env.DB_PASSWORD,
+  database: process.env.ORDER_DB_NAME || 'order_db',
 });
+pool.on('error', (e) => console.error('Lỗi kết nối Postgres (idle):', e.message));
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const load = (f) => grpc.loadPackageDefinition(
   protoLoader.loadSync(path.join(__dirname, '../../proto', f), { keepCase: true, defaults: true }));
 const insecure = grpc.credentials.createInsecure();
-const customerClient = new (load('customer.proto').customer.CustomerService)('localhost:50052', insecure);
-const productClient = new (load('product.proto').product.ProductService)('localhost:50053', insecure);
+const customerClient = new (load('customer.proto').customer.CustomerService)(CUSTOMER_ADDR, insecure);
+const productClient = new (load('product.proto').product.ProductService)(PRODUCT_ADDR, insecure);
 const orderProto = load('order.proto').order;
 
 // Gọi gRPC sang service khác, tối đa 5 giây
@@ -48,6 +58,17 @@ async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox_events(id) WHERE published_at IS NULL;
   `);
+}
+
+// Postgres có thể chưa sẵn sàng khi container vừa lên: thử lại thay vì sập
+async function initDbWithRetry() {
+  for (;;) {
+    try { await initDb(); console.log('Đã kết nối Postgres order_db'); return; }
+    catch (e) {
+      console.error('Kết nối Postgres lỗi, thử lại sau 3s:', e.message);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
 }
 
 const fail = (cb, code, message) => cb({ code, message });
@@ -141,7 +162,7 @@ const handlers = {
 };
 
 // ---- Outbox publisher: đọc event chưa gửi, đẩy lên Kafka, đánh dấu đã gửi ----
-const producer = new Kafka({ clientId: 'order-service', brokers: ['localhost:9092'] }).producer();
+const producer = new Kafka({ clientId: 'order-service', brokers: KAFKA_BROKERS }).producer();
 let kafkaReady = false, publishing = false, lastErr = '';
 async function publishOutbox() {
   if (publishing) return;
@@ -171,12 +192,12 @@ async function publishOutbox() {
 }
 
 (async () => {
-  await initDb();
+  await initDbWithRetry();
   const server = new grpc.Server();
   server.addService(orderProto.OrderService.service, handlers);
-  server.bindAsync('0.0.0.0:50054', grpc.ServerCredentials.createInsecure(), (err) => {
+  server.bindAsync(`0.0.0.0:${GRPC_PORT}`, grpc.ServerCredentials.createInsecure(), (err) => {
     if (err) throw err;
-    console.log('Order service gRPC chạy ở :50054');
+    console.log(`Order service gRPC chạy ở :${GRPC_PORT}`);
   });
   setInterval(publishOutbox, 1000);
 })();

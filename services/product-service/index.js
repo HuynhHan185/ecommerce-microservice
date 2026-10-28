@@ -4,6 +4,10 @@ const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 const mongoose = require('mongoose');
 
+// ---- Cấu hình (đọc từ biến môi trường, mặc định cho chạy local) ----
+const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27018/product_db';
+const GRPC_PORT = process.env.PRODUCT_PORT || 50053;
+
 const Product = mongoose.model('Product', new mongoose.Schema({
   pid: { type: Number, unique: true, required: true },
   pname: { type: String, required: true, trim: true, maxlength: 200 },
@@ -58,38 +62,49 @@ const handlers = {
       ? cb(null, { message: 'Product deleted successfully', pid: r.pid })
       : fail(cb, grpc.status.NOT_FOUND, 'Product not found');
   }),
-    // Giữ tồn kho cho cả đơn: được tất cả hoặc không được gì
-    ReserveStock: wrap(async (r, cb) => {
-        const done = [];
-        const undo = () => Promise.all(done.map((d) =>
-          Product.updateOne({ pid: d.pid }, { $inc: { quantity: d.qty } })));
-        for (const it of r.items) {
-          if (!(it.qty > 0)) { await undo(); return fail(cb, grpc.status.INVALID_ARGUMENT, 'qty không hợp lệ'); }
-          // Trừ kho nguyên tử: chỉ trừ khi còn đủ hàng, tránh bán vượt khi nhiều đơn đến cùng lúc
-          const p = await Product.findOneAndUpdate(
-            { pid: it.pid, quantity: { $gte: it.qty } },
-            { $inc: { quantity: -it.qty } }, { new: true });
-          if (!p) {
-            await undo();
-            const exists = await Product.exists({ pid: it.pid });
-            return exists
-              ? fail(cb, grpc.status.ABORTED, `Insufficient stock for pid ${it.pid}`)
-              : fail(cb, grpc.status.NOT_FOUND, `Product ${it.pid} not found`);
-          }
-          done.push({ pid: it.pid, qty: it.qty, unit_price: p.price });
-        }
-        cb(null, { items: done });
-      }),
-      // Hoàn kho khi tạo đơn thất bại (bù trừ)
-      ReleaseStock: wrap(async (r, cb) => {
-        for (const it of r.items)
-          await Product.updateOne({ pid: it.pid }, { $inc: { quantity: it.qty } });
-        cb(null, { message: 'Stock released', pid: 0 });
-      }),
+  // Giữ tồn kho cho cả đơn: được tất cả hoặc không được gì
+  ReserveStock: wrap(async (r, cb) => {
+    const done = [];
+    const undo = () => Promise.all(done.map((d) =>
+      Product.updateOne({ pid: d.pid }, { $inc: { quantity: d.qty } })));
+    for (const it of r.items) {
+      if (!(it.qty > 0)) { await undo(); return fail(cb, grpc.status.INVALID_ARGUMENT, 'qty không hợp lệ'); }
+      // Trừ kho nguyên tử: chỉ trừ khi còn đủ hàng, tránh bán vượt khi nhiều đơn đến cùng lúc
+      const p = await Product.findOneAndUpdate(
+        { pid: it.pid, quantity: { $gte: it.qty } },
+        { $inc: { quantity: -it.qty } }, { new: true });
+      if (!p) {
+        await undo();
+        const exists = await Product.exists({ pid: it.pid });
+        return exists
+          ? fail(cb, grpc.status.ABORTED, `Insufficient stock for pid ${it.pid}`)
+          : fail(cb, grpc.status.NOT_FOUND, `Product ${it.pid} not found`);
+      }
+      done.push({ pid: it.pid, qty: it.qty, unit_price: p.price });
+    }
+    cb(null, { items: done });
+  }),
+  // Hoàn kho khi tạo đơn thất bại (bù trừ)
+  ReleaseStock: wrap(async (r, cb) => {
+    for (const it of r.items)
+      await Product.updateOne({ pid: it.pid }, { $inc: { quantity: it.qty } });
+    cb(null, { message: 'Stock released', pid: 0 });
+  }),
 };
 
+// MongoDB có thể chưa sẵn sàng khi container vừa lên: thử lại thay vì sập
+async function connectWithRetry() {
+  for (;;) {
+    try { await mongoose.connect(MONGO_URL); return; }
+    catch (e) {
+      console.error('Kết nối MongoDB lỗi, thử lại sau 3s:', e.message);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+
 (async () => {
-  await mongoose.connect('mongodb://localhost:27018/product_db');
+  await connectWithRetry();
   console.log('Đã kết nối MongoDB product_db');
   if ((await Product.countDocuments()) === 0) {       // dữ liệu mẫu cho dev
     for (const [pname, price, quantity] of [['Laptop', 1500, 10], ['Mouse', 25, 100]])
@@ -98,8 +113,8 @@ const handlers = {
   }
   const server = new grpc.Server();
   server.addService(proto.ProductService.service, handlers);
-  server.bindAsync('0.0.0.0:50053', grpc.ServerCredentials.createInsecure(), (err) => {
+  server.bindAsync(`0.0.0.0:${GRPC_PORT}`, grpc.ServerCredentials.createInsecure(), (err) => {
     if (err) throw err;
-    console.log('Product service gRPC chạy ở :50053');
+    console.log(`Product service gRPC chạy ở :${GRPC_PORT}`);
   });
 })();

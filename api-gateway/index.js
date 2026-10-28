@@ -6,17 +6,28 @@ const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 const Redis = require('ioredis');
 
-const redis = new Redis({ host: 'localhost', port: 6379 });
+// ---- Cấu hình (đọc từ biến môi trường, mặc định cho chạy local) ----
+const PORT = process.env.GATEWAY_PORT || 8080;
+const AUTH_ADDR = process.env.AUTH_SERVICE_ADDR || 'localhost:50051';
+const CUSTOMER_ADDR = process.env.CUSTOMER_SERVICE_ADDR || 'localhost:50052';
+const PRODUCT_ADDR = process.env.PRODUCT_SERVICE_ADDR || 'localhost:50053';
+const ORDER_ADDR = process.env.ORDER_SERVICE_ADDR || 'localhost:50054';
+const SHIPMENT_ADDR = process.env.SHIPMENT_SERVICE_ADDR || 'localhost:50055';
+
+const redis = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: Number(process.env.REDIS_PORT || 6379),
+});
 redis.on('error', (e) => console.error('Redis lỗi:', e.message));
 
 const load = (file) => grpc.loadPackageDefinition(
   protoLoader.loadSync(path.join(__dirname, '../proto', file), { keepCase: true, defaults: true }));
 const insecure = grpc.credentials.createInsecure();
-const auth = new (load('auth.proto').auth.AuthService)('localhost:50051', insecure);
-const customer = new (load('customer.proto').customer.CustomerService)('localhost:50052', insecure);
-const product = new (load('product.proto').product.ProductService)('localhost:50053', insecure);
-const order = new (load('order.proto').order.OrderService)('localhost:50054', insecure);
-const shipment = new (load('shipment.proto').shipment.ShipmentService)('localhost:50055', insecure);
+const auth = new (load('auth.proto').auth.AuthService)(AUTH_ADDR, insecure);
+const customer = new (load('customer.proto').customer.CustomerService)(CUSTOMER_ADDR, insecure);
+const product = new (load('product.proto').product.ProductService)(PRODUCT_ADDR, insecure);
+const order = new (load('order.proto').order.OrderService)(ORDER_ADDR, insecure);
+const shipment = new (load('shipment.proto').shipment.ShipmentService)(SHIPMENT_ADDR, insecure);
 
 const HTTP = {
   [grpc.status.INVALID_ARGUMENT]: 400,
@@ -193,4 +204,4 @@ app.patch('/api/shipments/:shipid/status', authenticate, authorize('ADMIN', 'SHI
     rpc(shipment, 'UpdateStatus', { shipid: Number(req.params.shipid), status }, res);
   });
 
-app.listen(8080, () => console.log('API Gateway chạy ở :8080'));
+app.listen(PORT, () => console.log(`API Gateway chạy ở :${PORT}`));

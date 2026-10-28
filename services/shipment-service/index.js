@@ -5,6 +5,11 @@ const protoLoader = require('@grpc/proto-loader');
 const mongoose = require('mongoose');
 const { Kafka } = require('kafkajs');
 
+// ---- Cấu hình (đọc từ biến môi trường, mặc định cho chạy local) ----
+const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27019/shipment_db';
+const KAFKA_BROKERS = (process.env.KAFKA_BROKERS || 'localhost:9092').split(',');
+const GRPC_PORT = process.env.SHIPMENT_PORT || 50055;
+
 const STATUSES = ['PENDING', 'SHIPPING', 'DELIVERED', 'CANCELLED'];
 
 const Shipment = mongoose.model('Shipment', new mongoose.Schema({
@@ -64,7 +69,7 @@ async function reject(reason, raw) {
   await FailedEvent.create({ reason, raw });
 }
 async function startConsumer() {
-  const kafka = new Kafka({ clientId: 'shipment-service', brokers: ['localhost:9092'] });
+  const kafka = new Kafka({ clientId: 'shipment-service', brokers: KAFKA_BROKERS });
   const consumer = kafka.consumer({ groupId: 'shipment-service' });
   await consumer.connect();
   await consumer.subscribe({ topic: 'order-created', fromBeginning: true });
@@ -86,14 +91,25 @@ async function startConsumer() {
   });
 }
 
+// Kafka có thể chưa sẵn sàng khi container vừa lên: thử lại thay vì sập
+async function startConsumerWithRetry() {
+  for (;;) {
+    try { await startConsumer(); return; }
+    catch (e) {
+      console.error('Kết nối Kafka lỗi, thử lại sau 5s:', e.message);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+}
+
 (async () => {
-  await mongoose.connect('mongodb://localhost:27019/shipment_db');
+  await mongoose.connect(MONGO_URL);
   console.log('Đã kết nối MongoDB shipment_db');
   const server = new grpc.Server();
   server.addService(proto.ShipmentService.service, handlers);
-  server.bindAsync('0.0.0.0:50055', grpc.ServerCredentials.createInsecure(), (err) => {
+  server.bindAsync(`0.0.0.0:${GRPC_PORT}`, grpc.ServerCredentials.createInsecure(), (err) => {
     if (err) throw err;
-    console.log('Shipment service gRPC chạy ở :50055');
+    console.log(`Shipment service gRPC chạy ở :${GRPC_PORT}`);
   });
-  await startConsumer();
+  startConsumerWithRetry();
 })();

@@ -1,0 +1,13 @@
+FROM node:20-alpine
+WORKDIR /app
+RUN apk add --no-cache openssl
+
+COPY proto ./proto
+
+ARG SERVICE_DIR
+COPY ${SERVICE_DIR}/package*.json ./${SERVICE_DIR}/
+RUN cd ${SERVICE_DIR} && npm ci --omit=dev
+COPY ${SERVICE_DIR} ./${SERVICE_DIR}
+
+WORKDIR /app/${SERVICE_DIR}
+CMD ["node", "index.js"]
