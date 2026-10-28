@@ -14,6 +14,7 @@ const load = (file) => grpc.loadPackageDefinition(
 const insecure = grpc.credentials.createInsecure();
 const auth = new (load('auth.proto').auth.AuthService)('localhost:50051', insecure);
 const customer = new (load('customer.proto').customer.CustomerService)('localhost:50052', insecure);
+const product = new (load('product.proto').product.ProductService)('localhost:50053', insecure);
 
 const HTTP = {
   [grpc.status.INVALID_ARGUMENT]: 400,
@@ -21,6 +22,7 @@ const HTTP = {
   [grpc.status.PERMISSION_DENIED]: 403,
   [grpc.status.NOT_FOUND]: 404,
   [grpc.status.ALREADY_EXISTS]: 409,
+  [grpc.status.ABORTED]: 409,
 };
 const rpc = (client, method, body, res, okStatus = 200) =>
   client[method](body, (err, reply) => {
@@ -77,6 +79,18 @@ const ownerOrAdmin = (req, res, next) =>
     ? next()
     : res.status(403).json({ error: 'Không đủ quyền' });
 
+// ---- Kiểm tra dữ liệu Product ----
+const validPid = (req, res, next) =>
+  /^\d{1,9}$/.test(req.params.pid) ? next() : res.status(400).json({ error: 'pid không hợp lệ' });
+const validProduct = (req, res, next) => {
+  const { pname, price, quantity } = req.body || {};
+  const ok = typeof pname === 'string' && pname.trim() !== ''
+    && typeof price === 'number' && price >= 0
+    && Number.isInteger(quantity) && quantity >= 0;
+  return ok ? next()
+    : res.status(400).json({ error: 'pname, price (>=0), quantity (số nguyên >=0) là bắt buộc' });
+};
+
 const app = express();
 app.use(express.json());
 app.use((req, _res, next) => {
@@ -86,6 +100,12 @@ app.use((req, _res, next) => {
 app.use(rateLimit('global', 100));
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/api/health', async (_req, res) => {
+  try {
+    await redis.ping();
+    res.json({ status: 'UP', message: 'E-commerce API is running' });
+  } catch (e) { res.status(503).json({ status: 'DOWN', message: 'Redis không khả dụng' }); }
+});
 
 // ---- Auth ----
 app.post('/api/auth/register', (req, res) => rpc(auth, 'Register', req.body, res, 201));
@@ -106,5 +126,16 @@ app.put('/api/customers/:uid', authenticate, ownerOrAdmin, (req, res) => {
   rpc(customer, 'UpdateCustomer',
     { uid: req.params.uid, fullname: fullname || '', mid: mid || 0, set_mid: mid !== undefined }, res);
 });
+
+// ---- Product ----
+app.get('/api/products', authenticate, (_req, res) => rpc(product, 'ListProducts', {}, res));
+app.get('/api/products/:pid', authenticate, validPid,
+  (req, res) => rpc(product, 'GetProduct', { pid: Number(req.params.pid) }, res));
+app.post('/api/products', authenticate, authorize('ADMIN'), validProduct,
+  (req, res) => rpc(product, 'CreateProduct', req.body, res, 201));
+app.put('/api/products/:pid', authenticate, authorize('ADMIN'), validPid, validProduct,
+  (req, res) => rpc(product, 'UpdateProduct', { ...req.body, pid: Number(req.params.pid) }, res));
+app.delete('/api/products/:pid', authenticate, authorize('ADMIN'), validPid,
+  (req, res) => rpc(product, 'DeleteProduct', { pid: Number(req.params.pid) }, res));
 
 app.listen(8080, () => console.log('API Gateway chạy ở :8080'));
