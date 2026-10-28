@@ -16,6 +16,7 @@ const auth = new (load('auth.proto').auth.AuthService)('localhost:50051', insecu
 const customer = new (load('customer.proto').customer.CustomerService)('localhost:50052', insecure);
 const product = new (load('product.proto').product.ProductService)('localhost:50053', insecure);
 const order = new (load('order.proto').order.OrderService)('localhost:50054', insecure);
+const shipment = new (load('shipment.proto').shipment.ShipmentService)('localhost:50055', insecure);
 
 const HTTP = {
   [grpc.status.INVALID_ARGUMENT]: 400,
@@ -100,6 +101,11 @@ const validOrder = (req, res, next) => {
 };
 const validOid = (req, res, next) =>
   /^\d{1,9}$/.test(req.params.oid) ? next() : res.status(400).json({ error: 'oid không hợp lệ' });
+const validShipid = (req, res, next) =>
+  /^\d{1,9}$/.test(req.params.shipid) ? next() : res.status(400).json({ error: 'shipid không hợp lệ' });
+
+const SHIPMENT_STATUSES = ['PENDING', 'SHIPPING', 'DELIVERED', 'CANCELLED'];
+const canViewAllShipments = (req) => ['ADMIN', 'SHIPMENT_STAFF'].includes(req.user.role);
 
 const app = express();
 app.use(express.json());
@@ -165,5 +171,26 @@ app.get('/api/orders', authenticate, (req, res) =>
 app.get('/api/orders/:oid', authenticate, validOid, (req, res) =>
   rpc(order, 'GetOrder',
     { oid: Number(req.params.oid), requester_uid: req.user.user_id, is_admin: req.user.role === 'ADMIN' }, res));
+
+// ---- Shipment ----
+// Tra shipment theo đơn hàng: GET /api/shipments?oid=1001
+app.get('/api/shipments', authenticate, (req, res) => {
+  if (!/^\d{1,9}$/.test(String(req.query.oid || '')))
+    return res.status(400).json({ error: 'Cần tham số oid hợp lệ' });
+  rpc(shipment, 'GetShipmentByOrder',
+    { oid: Number(req.query.oid), requester_uid: req.user.user_id, can_view_all: canViewAllShipments(req) }, res);
+});
+
+app.get('/api/shipments/:shipid', authenticate, validShipid, (req, res) =>
+  rpc(shipment, 'GetShipment',
+    { shipid: Number(req.params.shipid), requester_uid: req.user.user_id, can_view_all: canViewAllShipments(req) }, res));
+
+app.patch('/api/shipments/:shipid/status', authenticate, authorize('ADMIN', 'SHIPMENT_STAFF'), validShipid,
+  (req, res) => {
+    const status = req.body && req.body.status;
+    if (!SHIPMENT_STATUSES.includes(status))
+      return res.status(400).json({ error: 'status phải là ' + SHIPMENT_STATUSES.join(', ') });
+    rpc(shipment, 'UpdateStatus', { shipid: Number(req.params.shipid), status }, res);
+  });
 
 app.listen(8080, () => console.log('API Gateway chạy ở :8080'));

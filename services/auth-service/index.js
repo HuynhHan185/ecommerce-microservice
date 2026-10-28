@@ -36,12 +36,18 @@ async function initDb() {
     INSERT INTO roles(name) VALUES ('CUSTOMER'),('ADMIN'),('SHIPMENT_STAFF')
       ON CONFLICT DO NOTHING;
   `);
-  // Tài khoản admin mặc định cho môi trường dev
-  const hash = await bcrypt.hash('Admin@123', 10);
-  await pool.query(
-    `INSERT INTO users(username,email,password_hash,role_id)
-     SELECT 'admin','admin@example.com',$1,id FROM roles WHERE name='ADMIN'
-     ON CONFLICT DO NOTHING`, [hash]);
+  // Tài khoản mặc định cho môi trường dev/demo
+  const seed = [
+    ['admin', 'admin@example.com', 'Admin@123', 'ADMIN'],
+    ['staff', 'staff@example.com', 'Staff@123', 'SHIPMENT_STAFF'],
+  ];
+  for (const [username, email, password, role] of seed) {
+    const hash = await bcrypt.hash(password, 10);
+    await pool.query(
+      `INSERT INTO users(username,email,password_hash,role_id)
+       SELECT $1,$2,$3,id FROM roles WHERE name=$4
+       ON CONFLICT DO NOTHING`, [username, email, hash, role]);
+  }
 }
 
 const def = protoLoader.loadSync(path.join(__dirname, '../../proto/auth.proto'),
