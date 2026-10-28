@@ -15,6 +15,7 @@ const insecure = grpc.credentials.createInsecure();
 const auth = new (load('auth.proto').auth.AuthService)('localhost:50051', insecure);
 const customer = new (load('customer.proto').customer.CustomerService)('localhost:50052', insecure);
 const product = new (load('product.proto').product.ProductService)('localhost:50053', insecure);
+const order = new (load('order.proto').order.OrderService)('localhost:50054', insecure);
 
 const HTTP = {
   [grpc.status.INVALID_ARGUMENT]: 400,
@@ -23,6 +24,7 @@ const HTTP = {
   [grpc.status.NOT_FOUND]: 404,
   [grpc.status.ALREADY_EXISTS]: 409,
   [grpc.status.ABORTED]: 409,
+  [grpc.status.UNAVAILABLE]: 503,
 };
 const rpc = (client, method, body, res, okStatus = 200) =>
   client[method](body, (err, reply) => {
@@ -79,7 +81,7 @@ const ownerOrAdmin = (req, res, next) =>
     ? next()
     : res.status(403).json({ error: 'Không đủ quyền' });
 
-// ---- Kiểm tra dữ liệu Product ----
+// ---- Kiểm tra dữ liệu đầu vào ----
 const validPid = (req, res, next) =>
   /^\d{1,9}$/.test(req.params.pid) ? next() : res.status(400).json({ error: 'pid không hợp lệ' });
 const validProduct = (req, res, next) => {
@@ -90,6 +92,14 @@ const validProduct = (req, res, next) => {
   return ok ? next()
     : res.status(400).json({ error: 'pname, price (>=0), quantity (số nguyên >=0) là bắt buộc' });
 };
+const validOrder = (req, res, next) => {
+  const items = req.body && req.body.items;
+  const ok = Array.isArray(items) && items.length > 0 && items.length <= 50
+    && items.every((i) => Number.isInteger(i.pid) && i.pid > 0 && Number.isInteger(i.qty) && i.qty > 0);
+  return ok ? next() : res.status(400).json({ error: 'items phải là mảng {pid, qty} với số nguyên dương' });
+};
+const validOid = (req, res, next) =>
+  /^\d{1,9}$/.test(req.params.oid) ? next() : res.status(400).json({ error: 'oid không hợp lệ' });
 
 const app = express();
 app.use(express.json());
@@ -137,5 +147,23 @@ app.put('/api/products/:pid', authenticate, authorize('ADMIN'), validPid, validP
   (req, res) => rpc(product, 'UpdateProduct', { ...req.body, pid: Number(req.params.pid) }, res));
 app.delete('/api/products/:pid', authenticate, authorize('ADMIN'), validPid,
   (req, res) => rpc(product, 'DeleteProduct', { pid: Number(req.params.pid) }, res));
+
+// ---- Order ----
+app.post('/api/orders', authenticate, authorize('CUSTOMER'), validOrder, (req, res) => {
+  order.CreateOrder(
+    { uid: req.user.user_id, items: req.body.items.map(({ pid, qty }) => ({ pid, qty })) },
+    (err, reply) => {
+      if (err) return res.status(HTTP[err.code] || 500).json({ error: err.details });
+      // Shipment được tạo bất đồng bộ qua Kafka nên lúc này luôn là PENDING
+      res.status(201).json({ ...reply, shipment: { status: 'PENDING' } });
+    });
+});
+
+app.get('/api/orders', authenticate, (req, res) =>
+  rpc(order, 'ListOrders', { requester_uid: req.user.user_id, is_admin: req.user.role === 'ADMIN' }, res));
+
+app.get('/api/orders/:oid', authenticate, validOid, (req, res) =>
+  rpc(order, 'GetOrder',
+    { oid: Number(req.params.oid), requester_uid: req.user.user_id, is_admin: req.user.role === 'ADMIN' }, res));
 
 app.listen(8080, () => console.log('API Gateway chạy ở :8080'));

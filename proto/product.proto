@@ -7,6 +7,8 @@ service ProductService {
   rpc CreateProduct (ProductInput) returns (Product);
   rpc UpdateProduct (UpdateProductRequest) returns (UpdateReply);
   rpc DeleteProduct (ProductId) returns (DeleteReply);
+  rpc ReserveStock (StockRequest) returns (ReserveReply);
+  rpc ReleaseStock (StockRequest) returns (UpdateReply);
 }
 
 message Empty {}
@@ -17,3 +19,7 @@ message ProductInput { string pname = 1; double price = 2; int32 quantity = 3; }
 message UpdateProductRequest { int32 pid = 1; string pname = 2; double price = 3; int32 quantity = 4; }
 message UpdateReply { string message = 1; int32 pid = 2; }
 message DeleteReply { string message = 1; int32 pid = 2; }
+message StockItem { int32 pid = 1; int32 qty = 2; }
+message StockRequest { repeated StockItem items = 1; }
+message ReservedItem { int32 pid = 1; int32 qty = 2; double unit_price = 3; }
+message ReserveReply { repeated ReservedItem items = 1; }

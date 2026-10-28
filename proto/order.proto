@@ -1,0 +1,18 @@
+syntax = "proto3";
+package order;
+
+service OrderService {
+  rpc CreateOrder (CreateOrderRequest) returns (Order);
+  rpc GetOrder (GetOrderRequest) returns (Order);
+  rpc ListOrders (ListOrdersRequest) returns (OrderList);
+}
+
+message OrderItem { int32 pid = 1; int32 qty = 2; double unit_price = 3; }
+message CreateOrderRequest { string uid = 1; repeated OrderItem items = 2; }
+message GetOrderRequest { int32 oid = 1; string requester_uid = 2; bool is_admin = 3; }
+message ListOrdersRequest { string requester_uid = 1; bool is_admin = 2; }
+message Order {
+  int32 oid = 1; string uid = 2; int32 discount = 3;
+  repeated OrderItem items = 4; string created_at = 5;
+}
+message OrderList { repeated Order items = 1; }

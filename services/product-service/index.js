@@ -58,6 +58,34 @@ const handlers = {
       ? cb(null, { message: 'Product deleted successfully', pid: r.pid })
       : fail(cb, grpc.status.NOT_FOUND, 'Product not found');
   }),
+    // Giữ tồn kho cho cả đơn: được tất cả hoặc không được gì
+    ReserveStock: wrap(async (r, cb) => {
+        const done = [];
+        const undo = () => Promise.all(done.map((d) =>
+          Product.updateOne({ pid: d.pid }, { $inc: { quantity: d.qty } })));
+        for (const it of r.items) {
+          if (!(it.qty > 0)) { await undo(); return fail(cb, grpc.status.INVALID_ARGUMENT, 'qty không hợp lệ'); }
+          // Trừ kho nguyên tử: chỉ trừ khi còn đủ hàng, tránh bán vượt khi nhiều đơn đến cùng lúc
+          const p = await Product.findOneAndUpdate(
+            { pid: it.pid, quantity: { $gte: it.qty } },
+            { $inc: { quantity: -it.qty } }, { new: true });
+          if (!p) {
+            await undo();
+            const exists = await Product.exists({ pid: it.pid });
+            return exists
+              ? fail(cb, grpc.status.ABORTED, `Insufficient stock for pid ${it.pid}`)
+              : fail(cb, grpc.status.NOT_FOUND, `Product ${it.pid} not found`);
+          }
+          done.push({ pid: it.pid, qty: it.qty, unit_price: p.price });
+        }
+        cb(null, { items: done });
+      }),
+      // Hoàn kho khi tạo đơn thất bại (bù trừ)
+      ReleaseStock: wrap(async (r, cb) => {
+        for (const it of r.items)
+          await Product.updateOne({ pid: it.pid }, { $inc: { quantity: it.qty } });
+        cb(null, { message: 'Stock released', pid: 0 });
+      }),
 };
 
 (async () => {
